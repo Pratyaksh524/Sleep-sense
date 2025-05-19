@@ -1,167 +1,124 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.widgets import Button
+from matplotlib.widgets import Slider, Button
 
-plt.ion()  # Interactive mode on
-fig, axs = plt.subplots(6, 1, figsize=(10, 12))
-plt.subplots_adjust(bottom=0.15)  # Make space for buttons
+# File path
+file_path = r"C:\Users\DELL\Documents\Workday1\sleepsense\DATA2304.TXT"
 
-# Initialize data containers
-time_data, spo2_data, pulse_data, body_pos_data = [], [], [], []
-pleth_data, flow_data, snore_data = [], [], []
+data = pd.read_csv(file_path, header=None)
 
-file_path = r"C:\Users\DELL\Documents\Workday1\sleepsense\DATA1623.TXT"
+time = data[0].astype(float) / 1000  # Convert from ms to seconds
+body_pos = data[1].astype(int)
+pulse = data[2].astype(float)
+spo2 = data[3].astype(float)
+flow = data[7].astype(float)
 
-# Body Position mapping to arrow directions
-def bodypos_to_arrow_dir(pos):
-    if pos == 10:
-        return (0, 1)   # Up
-    elif pos == 20:
-        return (0, -1)  # Down
-    elif pos == 30:
-        return (-1, 0)  # Left
-    elif pos == 40:
-        return (1, 0)   # Right
+def normalize(series):
+    return (series - series.min()) / (series.max() - series.min())
+
+body_pos_n = normalize(body_pos)
+pulse_n = normalize(pulse)
+spo2_n = normalize(spo2)
+flow_n = normalize(flow)
+
+arrow_directions = {
+    0: (0, 0.5, 'up', 'Up (Supine)'),
+    1: (-0.5, 0, 'left', 'Left'),
+    2: (0.5, 0, 'right', 'Right'),
+    3: (0, -0.5, 'down', 'Down (Prone)')
+}
+
+fig, ax = plt.subplots(figsize=(14, 8))
+
+plt.subplots_adjust(bottom=0.15, top=0.85)
+
+# Offsets to stack signals vertically
+offsets = [0, 1.2, 2.4, 3.6]
+
+# Plot each normalized signal with an offset
+ax.plot(time, body_pos_n + offsets[0], color='black', label='Body Position')
+ax.plot(time, pulse_n + offsets[1], color='red', label='Pulse')
+ax.plot(time, spo2_n + offsets[2], color='green', label='SpO2')
+ax.plot(time, flow_n + offsets[3], color='black', label='Airflow')
+
+# Set y-ticks and labels in middle of each stacked signal
+yticks_pos = [np.mean(sig) + offset for sig, offset in zip(
+    [body_pos_n, pulse_n, spo2_n, flow_n], offsets)]
+yticks_labels = ['Body Position', 'Pulse (BPM)', 'SpO2 (%)', 'Airflow']
+ax.set_yticks(yticks_pos)
+ax.set_yticklabels(yticks_labels, fontsize=12)
+
+ax.set_ylim(-0.5, max(offsets) + 1)
+ax.set_xlabel('Time (s)')
+ax.set_title('Sleepsense Plotting with Body Position Arrows')
+
+# Add body position arrows every 'interval' seconds
+arrow_y = offsets[0] + 0.5  # Y-position for arrows
+interval = 5  # seconds between arrows
+
+sampling_step = int(1 / (time[1] - time[0]) * interval)
+arrow_indices = time[::sampling_step]
+
+for t in arrow_indices:
+    idx = (np.abs(time - t)).argmin()
+    pos = body_pos.iloc[idx]
+    dx, dy, arrow_char, label = arrow_directions.get(pos, (0, 0, '?', 'Unknown'))
+    ax.annotate(
+        arrow_char,
+        xy=(time.iloc[idx], arrow_y),
+        xytext=(time.iloc[idx] + dx, arrow_y + dy),
+        fontsize=16,
+        color='blue',
+        ha='center',
+        va='center',
+        arrowprops=dict(arrowstyle='->', color='green')
+    )
+
+# Initial x-axis window size and limits
+window_size = 10
+start_time = time.iloc[0]
+end_time = time.iloc[-1]
+ax.set_xlim(start_time, start_time + window_size)
+
+# Slider widget to scroll through time, placed below the plot
+slider_ax = plt.axes([0.15, 0.07, 0.7, 0.03])
+slider = Slider(slider_ax, 'Time', start_time, end_time - window_size, valinit=start_time)
+
+def update(val):
+    t = slider.val
+    ax.set_xlim(t, t + window_size)
+    fig.canvas.draw_idle()
+
+slider.on_changed(update)
+
+# --- Replace RadioButtons with horizontal Buttons ---
+window_sizes = [5, 10, 15, 30, 60, 120, 300]  # seconds
+
+button_width = 0.08
+button_height = 0.04
+button_spacing = 0.01
+start_x = 0.1
+button_y = 0.92
+
+buttons = []
+
+def on_button_clicked(event, size):
+    global window_size
+    window_size = size
+    slider.valmax = end_time - window_size
+    slider.ax.set_xlim(slider.valmin, slider.valmax)
+    # If current slider value is out of range, reset it
+    if slider.val > slider.valmax:
+        slider.set_val(slider.valmax)
     else:
-        return (0, 0)
+        update(slider.val)
 
-highlight_times = [10, 20, 30, 40, 50]  # in whatever units original data is
+for i, size in enumerate(window_sizes):
+    ax_button = plt.axes([start_x + i*(button_width + button_spacing), button_y, button_width, button_height])
+    label = f"{size//60}m" if size >= 60 else f"{size}s"
+    button = Button(ax_button, label)
+    button.on_clicked(lambda event, s=size: on_button_clicked(event, s))
+    buttons.append(button)
 
-# Set column names once
-columns = [
-    "Time", "Pleth", "SpO2", "Pulse", "Flow",
-    "BodyPos", "Snore", "C4", "C5", "C6"
-]
-
-time_unit = "minutes"  # default mode
-
-def convert_time(t):
-    # Convert time from raw data units (assumed ms) to desired unit
-    if time_unit == "minutes":
-        return t / 60000  # ms to minutes
-    else:
-        return t / 1000   # ms to seconds
-
-def update_plots():
-    x = [convert_time(t) for t in time_data]
-
-    # Determine x-axis limits for zooming
-    if time_unit == "seconds":
-        if len(x) > 0:
-            max_x = x[-1]
-            min_x = max(0, max_x - 60)  # last 60 seconds window
-        else:
-            min_x, max_x = 0, 60
-    else:
-        if len(x) > 0:
-            min_x, max_x = min(x), max(x)
-        else:
-            min_x, max_x = 0, 1
-
-    # Plot all except body pos
-    plot_data = [
-        (axs[0], spo2_data, 'blue', 'o', "SpO2 (%)", "SpO2 over Time"),
-        (axs[1], pulse_data, 'red', 's', "Pulse (BPM)", "Pulse over Time"),
-        (axs[2], pleth_data, 'purple', '', "Pleth", "Pleth Waveform"),
-        (axs[3], flow_data, 'orange', '', "Flow", "Flow Waveform"),
-        (axs[4], snore_data, 'brown', '', "Snore", "Snoring Waveform"),
-    ]
-
-    for ax, y_data, color, marker, y_label, title in plot_data:
-        ax.cla()
-        if marker:
-            ax.plot(x, y_data, color=color, marker=marker)
-        else:
-            ax.plot(x, y_data, color=color)
-        ax.set_xlim(min_x, max_x)
-        ax.set_title(title)
-        ax.set_ylabel(y_label)
-        ax.set_xlabel(f"Time ({time_unit})")
-        ax.grid(True)
-
-        # Highlight vertical lines
-        highlight_x = [convert_time(t) for t in highlight_times]
-        for hx in highlight_x:
-            ax.axvline(x=hx, color='gray', linestyle='--', alpha=0.5)
-
-    # Body position plot with arrows, use index as x-axis
-    axs[5].cla()
-    body_x = np.arange(len(body_pos_data))
-    y = np.array(body_pos_data)
-    U, V = zip(*[bodypos_to_arrow_dir(pos) for pos in body_pos_data])
-    axs[5].quiver(body_x, y, U, V, angles='xy', scale_units='xy', scale=1.5, color='green')
-    axs[5].set_ylim(5, 45)
-    axs[5].set_title("Body Position over Time (Arrows)")
-    axs[5].set_xlabel("Index")
-    axs[5].set_ylabel("BodyPos")
-    axs[5].grid(True)
-
-    # Highlight lines on body pos plot by index
-    for t in highlight_times:
-        if t in time_data:
-            idx = time_data.index(t)
-            axs[5].axvline(x=idx, color='gray', linestyle='--', alpha=0.5)
-
-    plt.tight_layout()
-    plt.draw()
-    plt.pause(0.1)
-
-def toggle_time_unit(event):
-    global time_unit
-    time_unit = "seconds" if time_unit == "minutes" else "minutes"
-    update_plots()
-    btn.label.set_text(f"View in {time_unit}")
-    plt.draw()
-
-# Create toggle button
-ax_button = plt.axes([0.4, 0.05, 0.2, 0.05])
-btn = Button(ax_button, f"View in {time_unit}")
-btn.on_clicked(toggle_time_unit)
-
-try:
-    for chunk in pd.read_csv(file_path, header=None, names=columns, chunksize=1):
-        row = chunk.iloc[0]
-        try:
-            time_val = int(row["Time"])
-            spo2_val = float(row["SpO2"])
-            pulse_val = float(row["Pulse"])
-            bodypos_val = int(row["BodyPos"])
-            pleth_val = float(row["Pleth"])
-            flow_val = float(row["Flow"])
-            snore_val = float(row["Snore"])
-        except (ValueError, TypeError):
-            continue
-
-        # Filter values based on expected ranges
-        if not (85 <= spo2_val <= 100):
-            continue
-        if not (49 <= pulse_val <= 170):
-            continue
-        if not (5 <= bodypos_val <= 45):
-            continue
-        if pleth_val < 0 or pleth_val > 1000:
-            continue
-        if flow_val < -100 or flow_val > 100:
-            continue
-        if snore_val < 0 or snore_val > 1000:
-            continue
-        if time_val < 0:
-            continue
-
-        time_data.append(time_val)
-        spo2_data.append(spo2_val)
-        pulse_data.append(pulse_val)
-        body_pos_data.append(bodypos_val)
-        pleth_data.append(pleth_val)
-        flow_data.append(flow_val)
-        snore_data.append(snore_val)
-
-        update_plots()
-
-except KeyboardInterrupt:
-    print("Stopped by user.")
-
-finally:
-    plt.ioff()
-    plt.show()
+plt.show()
