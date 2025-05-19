@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # Interactive plot mode on
-plt.ion()
+# plt.ion()
 fig, axs = plt.subplots(6, 1, figsize=(12, 14))
 
 time_data, spo2_data, pulse_data, body_pos_data = [], [], [], []
@@ -117,10 +117,10 @@ try:
                     axs[5].axvline(x=idx, color='gray', linestyle='--', alpha=0.5)
 
         plt.tight_layout()
-        plt.pause(0.2)
+        # plt.pause(0.2)
 
 except KeyboardInterrupt:
-    print("Stopped by user.")
+    print("Stopped by Divyansh.")
 
 finally:
     plt.ioff()
