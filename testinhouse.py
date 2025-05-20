@@ -3,198 +3,185 @@ import pandas as pd
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QWidget, QSlider,
-    QPushButton, QHBoxLayout, QLabel
+    QPushButton, QHBoxLayout, QGridLayout, QToolButton, QLabel
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QEvent, QObject
+from PyQt5.QtGui import QFont
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+
+
+class HoverLabel(QWidget):
+    def __init__(self, signal_name, zoom_callback_in, zoom_callback_out):
+        super().__init__()
+        self.zoom_callback_in = zoom_callback_in
+        self.zoom_callback_out = zoom_callback_out
+
+        layout = QHBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(layout)
+
+        self.label = QLabel(signal_name)
+        self.label.setFont(QFont("Arial", 10))
+        layout.addWidget(self.label)
+
+        self.zoom_in_btn = QToolButton()
+        self.zoom_in_btn.setText("+")
+        self.zoom_in_btn.clicked.connect(lambda: self.zoom_callback_in(signal_name))
+        self.zoom_in_btn.hide()
+
+        self.zoom_out_btn = QToolButton()
+        self.zoom_out_btn.setText("-")
+        self.zoom_out_btn.clicked.connect(lambda: self.zoom_callback_out(signal_name))
+        self.zoom_out_btn.hide()
+
+        layout.addWidget(self.zoom_in_btn)
+        layout.addWidget(self.zoom_out_btn)
+
+        self.setMouseTracking(True)
+        self.installEventFilter(self)
+
+    def eventFilter(self, source, event):
+        if event.type() == QEvent.Enter:
+            self.zoom_in_btn.show()
+            self.zoom_out_btn.show()
+        elif event.type() == QEvent.Leave:
+            self.zoom_in_btn.hide()
+            self.zoom_out_btn.hide()
+        return super().eventFilter(source, event)
 
 
 class SleepSensePlot(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Dev Mode - Sleepsense Plotting")
+        self.setWindowTitle("Developer Mode - Sleepsense Plotting")
 
-        # Load data (adjust path)
+        # Load data
         file_path = r"C:\Users\DELL\Documents\Workday1\sleepsense\DATA2304.TXT"
         self.data = pd.read_csv(file_path, header=None)
-        self.time = self.data[0].astype(float) / 1000  # ms to s
+        self.time = self.data[0].astype(float) / 1000  # ms to seconds
         self.body_pos = self.data[1].astype(int)
         self.pulse = self.data[2].astype(float)
         self.spo2 = self.data[3].astype(float)
         self.flow = self.data[7].astype(float)
 
-        # Normalize signals
+        # Normalize
         self.body_pos_n = self.normalize(self.body_pos)
         self.pulse_n = self.normalize(self.pulse)
         self.spo2_n = self.normalize(self.spo2)
         self.flow_n = self.normalize(self.flow)
 
-        # Window settings
+        # Parameters
         self.start_time = self.time.iloc[0]
         self.end_time = self.time.iloc[-1]
-
         self.window_size = 10.0
-        self.min_window_size = 1.0
-        self.max_window_size = (self.end_time - self.start_time) / 2
-
-        self.arrow_directions = {
-            0: (0, 0.5, '↑', 'Up (Supine)'),
-            1: (-0.5, 0, '←', 'Left'),
-            2: (0.5, 0, '→', 'Right'),
-            3: (0, -0.5, '↓', 'Down (Prone)')
+        self.window_start = self.start_time
+        self.scales = {
+            'Pulse': 1.0,
+            'SpO2': 1.0,
+            'Airflow': 1.0,
         }
 
-        self.offsets = [0, 1.2, 2.4, 3.6]
-        self.initUI()
+        # Layout setup
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        main_layout = QVBoxLayout(self.central_widget)
+
+        self.canvas = FigureCanvas(Figure(figsize=(12, 6)))
+        self.ax = self.canvas.figure.subplots()
+
+        grid_layout = QGridLayout()
+        main_layout.addLayout(grid_layout)
+
+        # Left button panel
+        left_panel = QVBoxLayout()
+        left_panel.setAlignment(Qt.AlignTop)
+        for signal in ['Pulse', 'SpO2', 'Airflow']:
+            label = HoverLabel(
+                signal_name=signal,
+                zoom_callback_in=self.zoom_in,
+                zoom_callback_out=self.zoom_out
+            )
+            left_panel.addWidget(label)
+
+        left_container = QWidget()
+        left_container.setLayout(left_panel)
+        grid_layout.addWidget(left_container, 0, 0, alignment=Qt.AlignTop)
+
+        # Center plot
+        grid_layout.addWidget(self.canvas, 0, 1, 5, 1)
+
+        # Timeframe buttons
+        timeframe_layout = QHBoxLayout()
+        for label, sec in [("30s", 30), ("10s", 10), ("5s", 5), ("1m", 60)]:
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda _, s=sec: self.set_window_size(s))
+            timeframe_layout.addWidget(btn)
+        main_layout.addLayout(timeframe_layout)
+
+        # Time slider
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setMinimum(0)
+        self.slider.setMaximum(int((self.end_time - self.start_time - self.window_size) * 10))
+        self.slider.setValue(0)
+        self.slider.valueChanged.connect(self.update_plot)
+        main_layout.addWidget(self.slider)
+
+        self.plot_signals()
 
     def normalize(self, series):
         return (series - series.min()) / (series.max() - series.min())
 
-    def initUI(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QVBoxLayout()
-        central_widget.setLayout(layout)
-
-        # Matplotlib Figure
-        self.fig = Figure(figsize=(14, 8))
-        self.canvas = FigureCanvas(self.fig)
-        layout.addWidget(self.canvas)
-        self.ax = self.fig.add_subplot(111)
-        self.fig.subplots_adjust(bottom=0.2, top=0.85)
-
-        # Time window label above the plot
-        self.time_window_label = QLabel("")
-        self.time_window_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.time_window_label)
-
-        # Slider layout
-        slider_layout = QHBoxLayout()
-        layout.addLayout(slider_layout)
-
-        self.start_time_label = QLabel(f"{self.start_time:.1f}s")
-        self.end_time_label = QLabel(f"{self.end_time:.1f}s")
-
-        slider_layout.addWidget(self.start_time_label)
-
-        self.slider = QSlider(Qt.Horizontal)
-        self.slider.setMinimum(0)
-        self.slider.setMaximum(int((self.end_time - self.start_time - self.window_size) * 100))
-        self.slider.setValue(0)
-        self.slider.setTickInterval(100)
-        self.slider.setSingleStep(1)
-        self.slider.valueChanged.connect(self.update_plot)
-        slider_layout.addWidget(self.slider)
-
-        slider_layout.addWidget(self.end_time_label)
-
-        # Zoom controls
-        zoom_layout = QHBoxLayout()
-        layout.addLayout(zoom_layout)
-
-        zoom_out_btn = QPushButton("-")
-        zoom_out_btn.setFixedWidth(40)
-        zoom_out_btn.clicked.connect(self.zoom_out)
-        zoom_layout.addWidget(zoom_out_btn)
-
-        zoom_in_btn = QPushButton("+")
-        zoom_in_btn.setFixedWidth(40)
-        zoom_in_btn.clicked.connect(self.zoom_in)
-        zoom_layout.addWidget(zoom_in_btn)
-
-        # Fixed time buttons
-        fixed_size_layout = QHBoxLayout()
-        layout.addLayout(fixed_size_layout)
-
-        self.window_sizes = [5, 10, 15, 30, 60, 120, 300]
-        for size in self.window_sizes:
-            label = f"{size//60}m" if size >= 60 else f"{size}s"
-            btn = QPushButton(label)
-            btn.clicked.connect(lambda _, s=size: self.change_window_size(s))
-            fixed_size_layout.addWidget(btn)
-
-        self.plot_signals()
-        self.update_plot()
-
     def plot_signals(self):
         self.ax.clear()
-        self.ax.plot(self.time, self.body_pos_n + self.offsets[0], color='black', label='Body Position')
-        self.ax.plot(self.time, self.pulse_n + self.offsets[1], color='red', label='Pulse')
-        self.ax.plot(self.time, self.spo2_n + self.offsets[2], color='green', label='SpO2')
-        self.ax.plot(self.time, self.flow_n + self.offsets[3], color='black', label='Airflow')
+        t0 = self.window_start
+        t1 = t0 + self.window_size
+        mask = (self.time >= t0) & (self.time <= t1)
+        t = self.time[mask]
 
-        yticks_pos = [np.mean(sig) + offset for sig, offset in zip(
-            [self.body_pos_n, self.pulse_n, self.spo2_n, self.flow_n], self.offsets)]
-        yticks_labels = ['Body Position', 'Pulse (BPM)', 'SpO2 (%)', 'Airflow']
+        offset = [0, 1.2, 2.4, 3.6]
+        body_pos = self.body_pos_n[mask]
+        pulse = self.pulse_n[mask] * self.scales['Pulse']
+        spo2 = self.spo2_n[mask] * self.scales['SpO2']
+        flow = self.flow_n[mask] * self.scales['Airflow']
 
-        self.ax.set_yticks(yticks_pos)
-        self.ax.set_yticklabels(yticks_labels, fontsize=12)
-        self.ax.set_ylim(-0.5, max(self.offsets) + 1)
-        self.ax.set_xlabel('Time (s)')
-        self.ax.set_title('Dev Mode - Sleepsense Plotting with Body Position Arrows')
+        self.ax.plot(t, body_pos + offset[0], label="Body Position", color="black")
+        self.ax.plot(t, pulse + offset[1], label="Pulse", color="red")
+        self.ax.plot(t, spo2 + offset[2], label="SpO2", color="green")
+        self.ax.plot(t, flow + offset[3], label="Airflow", color="blue")
 
-        # Arrows
-        arrow_y = self.offsets[0] + 0.5
-        interval = 5
-        dt = self.time.iloc[1] - self.time.iloc[0]
-        sampling_step = max(int(interval / dt), 1)
-        arrow_times = self.time[::sampling_step]
+        yticks = [np.mean(sig) + off for sig, off in zip([body_pos, pulse, spo2, flow], offset)]
+        self.ax.set_yticks(yticks)
+        self.ax.set_yticklabels(['Body Position', 'Pulse', 'SpO2', 'Airflow'])
 
-        for t in arrow_times:
-            idx = (np.abs(self.time - t)).argmin()
-            pos = self.body_pos.iloc[idx]
-            dx, dy, arrow_char, label = self.arrow_directions.get(pos, (0, 0, '?', 'Unknown'))
-            self.ax.annotate(
-                arrow_char,
-                xy=(self.time.iloc[idx], arrow_y),
-                xytext=(self.time.iloc[idx] + dx, arrow_y + dy),
-                fontsize=16,
-                color='blue',
-                ha='center',
-                va='center',
-                arrowprops=dict(arrowstyle='->', color='green')
-            )
+        self.ax.set_xlim(t0, t1)
+        self.ax.set_ylim(-0.5, 5)
+        self.ax.set_title("Sleepsense Signal Viewer")
+        self.ax.grid(True, linestyle='--', alpha=0.5)
+        self.ax.legend(loc="upper right")
+        self.canvas.draw()
 
-    def update_plot(self):
-        slider_val = self.slider.value() / 100
-        max_start = self.end_time - self.window_size
-        start = self.start_time + min(slider_val, max_start - self.start_time)
-        end = start + self.window_size
+    def update_plot(self, value):
+        self.window_start = self.start_time + value / 10.0
+        self.plot_signals()
 
-        self.ax.set_xlim(start, end)
-        self.canvas.draw_idle()
-        self.time_window_label.setText(f"Showing: {start:.1f}s to {end:.1f}s")
+    def zoom_in(self, signal_name):
+        self.scales[signal_name] *= 1.2
+        self.plot_signals()
 
-    def change_window_size(self, size):
-        self.window_size = float(size)
-        self.window_size = max(self.min_window_size, min(self.window_size, self.max_window_size))
-        max_slider_val = int((self.end_time - self.start_time - self.window_size) * 100)
-        self.slider.setMaximum(max_slider_val)
-        if self.slider.value() > max_slider_val:
-            self.slider.setValue(max_slider_val)
-        else:
-            self.update_plot()
+    def zoom_out(self, signal_name):
+        self.scales[signal_name] /= 1.2
+        self.plot_signals()
 
-    def zoom_in(self):
-        new_size = self.window_size / 1.5
-        if new_size < self.min_window_size:
-            new_size = self.min_window_size
-        self.window_size = new_size
-        self.slider.setMaximum(int((self.end_time - self.start_time - self.window_size) * 100))
-        self.update_plot()
-
-    def zoom_out(self):
-        new_size = self.window_size * 1.5
-        if new_size > self.max_window_size:
-            new_size = self.max_window_size
-        self.window_size = new_size
-        self.slider.setMaximum(int((self.end_time - self.start_time - self.window_size) * 100))
-        self.update_plot()
+    def set_window_size(self, seconds):
+        self.window_size = seconds
+        max_slider = int((self.end_time - self.start_time - self.window_size) * 10)
+        self.slider.setMaximum(max_slider)
+        self.update_plot(self.slider.value())
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = SleepSensePlot()
-    win.show()
+    window = SleepSensePlot()
+    window.show()
     sys.exit(app.exec_())
