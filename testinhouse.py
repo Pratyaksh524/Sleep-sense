@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QWidget, QSlider,
     QPushButton, QHBoxLayout, QGridLayout, QToolButton, QLabel
 )
-from PyQt5.QtCore import Qt, QEvent, QObject
+from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtGui import QFont
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -53,11 +53,11 @@ class HoverLabel(QWidget):
 
 class SleepSensePlot(QMainWindow):
     def __init__(self):
-        super().__init__()
+        super().__init__()   
         self.setWindowTitle("Developer Mode - Sleepsense Plotting")
 
         # Load data
-        file_path = r"C:\Users\DELL\Documents\Workday1\sleepsense\DATA2304.TXT"
+        file_path = r"C:\Users\DELL\Documents\Workday1\sleepsense\DATA1623.TXT"
         self.data = pd.read_csv(file_path, header=None)
         self.time = self.data[0].astype(float) / 1000  # ms to seconds
         self.body_pos = self.data[1].astype(int)
@@ -87,13 +87,21 @@ class SleepSensePlot(QMainWindow):
         self.setCentralWidget(self.central_widget)
         main_layout = QVBoxLayout(self.central_widget)
 
+        # Timeframe buttons on top
+        timeframe_layout = QHBoxLayout()
+        for label, sec in [("5s", 5), ("10s", 10), ("30s", 30), ("1m", 60), ("5m", 300)]:
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda _, s=sec: self.set_window_size(s))
+            timeframe_layout.addWidget(btn)
+        main_layout.addLayout(timeframe_layout)
+
         self.canvas = FigureCanvas(Figure(figsize=(12, 6)))
         self.ax = self.canvas.figure.subplots()
 
         grid_layout = QGridLayout()
         main_layout.addLayout(grid_layout)
 
-        # Left button panel
+        # Left signal zoom buttons
         left_panel = QVBoxLayout()
         left_panel.setAlignment(Qt.AlignTop)
         for signal in ['Pulse', 'SpO2', 'Airflow']:
@@ -108,16 +116,8 @@ class SleepSensePlot(QMainWindow):
         left_container.setLayout(left_panel)
         grid_layout.addWidget(left_container, 0, 0, alignment=Qt.AlignTop)
 
-        # Center plot
+        # Plot in center
         grid_layout.addWidget(self.canvas, 0, 1, 5, 1)
-
-        # Timeframe buttons
-        timeframe_layout = QHBoxLayout()
-        for label, sec in [("30s", 30), ("10s", 10), ("5s", 5), ("1m", 60)]:
-            btn = QPushButton(label)
-            btn.clicked.connect(lambda _, s=sec: self.set_window_size(s))
-            timeframe_layout.addWidget(btn)
-        main_layout.addLayout(timeframe_layout)
 
         # Time slider
         self.slider = QSlider(Qt.Horizontal)
@@ -132,6 +132,18 @@ class SleepSensePlot(QMainWindow):
     def normalize(self, series):
         return (series - series.min()) / (series.max() - series.min())
 
+    def get_body_arrow(self, value):
+        if value == 0:
+            return "▲"  # Supine
+        elif value == 1:
+            return "◀"  # Left
+        elif value == 2:
+            return "▶"  # Right
+        elif value == 3:
+            return "▼"  # Prone
+        else:
+            return "?"  # Unknown
+
     def plot_signals(self):
         self.ax.clear()
         t0 = self.window_start
@@ -145,7 +157,13 @@ class SleepSensePlot(QMainWindow):
         spo2 = self.spo2_n[mask] * self.scales['SpO2']
         flow = self.flow_n[mask] * self.scales['Airflow']
 
-        self.ax.plot(t, body_pos + offset[0], label="Body Position", color="black")
+        # Plot body position as points + arrows
+        self.ax.plot(t, body_pos + offset[0], label="Body Position", color="black", linestyle='', marker='o')
+        for ti, bi in zip(t, self.body_pos[mask]):
+            symbol = self.get_body_arrow(bi)
+            self.ax.text(ti, offset[0], symbol, fontsize=10, ha='center', va='bottom')
+
+        # Plot other signals
         self.ax.plot(t, pulse + offset[1], label="Pulse", color="red")
         self.ax.plot(t, spo2 + offset[2], label="SpO2", color="green")
         self.ax.plot(t, flow + offset[3], label="Airflow", color="blue")
